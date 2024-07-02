@@ -21,9 +21,15 @@
 #   $pre-commit install --hook-type pre-commit
 #
 # Run default hooks manually:
-# This only works on staged un-committed files.
+# This default only works on staged un-committed files.
 # Unstaged files are stashed, the checks performed, then the stash is restored.
 #   $pre-commit run
+#
+# Run default hooks on modified files
+# between two commits:
+#   $pre-commit run --from-ref HEAD~1 --to-ref HEAD
+# or across branches:
+#   $pre-commit run --from-ref origin/HEAD --to-ref HEAD
 #
 # Run default hooks on all files in repo:
 # Primarily for CI. Devs can optionally use it.
@@ -35,7 +41,7 @@
 #
 # I don't want to manually install pre-commit every time I clone this repo or any other
 # repo that supports the precommit tool.
-# Run this once on your dev machine:
+# Run this config once on your dev machine:
 #   $git config --global init.templateDir ~/.git-template
 #   $pre-commit init-templatedir ~/.git-template
 
@@ -48,10 +54,17 @@ repos:
     - repo: https://github.com/pre-commit/pre-commit-hooks
       rev: v4.6.0
       hooks:
-        - id: check-merge-conflict
+        - id: check-merge-conflict # merge conflict string(s) found.
         - id: check-yaml
         - id: check-toml
         - id: end-of-file-fixer
         - id: trailing-whitespace
         - id: detect-private-key
-        - id: check-added-large-files
+        - id: check-added-large-files # Set up and use git lfs if this fails.
+
+    # Gitleaks is a SAST tool for detecting and preventing hardcoded secrets
+    # like passwords, api keys, and tokens in git repos.
+    - repo: https://github.com/gitleaks/gitleaks
+      rev: v8.16.1
+      hooks:
+        - id: gitleaks
