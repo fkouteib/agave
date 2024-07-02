@@ -1,5 +1,3 @@
-#[cfg(feature = "dev-context-only-utils")]
-use qualifier_attr::qualifiers;
 use {
     crate::{
         account_loader::{
@@ -9,7 +7,7 @@ use {
         },
         account_overrides::AccountOverrides,
         message_processor::MessageProcessor,
-        program_loader::load_program_with_pubkey,
+        program_loader::{get_program_modification_slot, load_program_with_pubkey},
         rollback_accounts::RollbackAccounts,
         transaction_account_state_info::TransactionAccountStateInfo,
         transaction_error_metrics::TransactionErrorMetrics,
@@ -29,7 +27,7 @@ use {
         invoke_context::{EnvironmentConfig, InvokeContext},
         loaded_programs::{
             ForkGraph, ProgramCache, ProgramCacheEntry, ProgramCacheForTxBatch,
-            ProgramCacheMatchCriteria, ProgramRuntimeEnvironments,
+            ProgramCacheMatchCriteria,
         },
         log_collector::LogCollector,
         sysvar_cache::SysvarCache,
@@ -104,6 +102,9 @@ pub struct TransactionProcessingConfig<'a> {
     /// Encapsulates overridden accounts, typically used for transaction
     /// simulation.
     pub account_overrides: Option<&'a AccountOverrides>,
+    /// Whether or not to check a program's modification slot when replenishing
+    /// a program cache instance.
+    pub check_program_modification_slot: bool,
     /// The compute budget to use for transaction execution.
     pub compute_budget: Option<ComputeBudget>,
     /// The maximum number of bytes that log messages can consume.
@@ -205,8 +206,11 @@ impl<FG: ForkGraph> TransactionBatchProcessor<FG> {
 
     /// Returns the current environments depending on the given epoch
     /// Returns None if the call could result in a deadlock
-    #[cfg_attr(feature = "dev-context-only-utils", qualifiers(pub))]
-    pub fn get_environments_for_epoch(&self, epoch: Epoch) -> Option<ProgramRuntimeEnvironments> {
+    #[cfg(feature = "dev-context-only-utils")]
+    pub fn get_environments_for_epoch(
+        &self,
+        epoch: Epoch,
+    ) -> Option<solana_program_runtime::loaded_programs::ProgramRuntimeEnvironments> {
         self.program_cache
             .try_read()
             .ok()
@@ -258,6 +262,7 @@ impl<FG: ForkGraph> TransactionBatchProcessor<FG> {
         let program_cache_for_tx_batch = Rc::new(RefCell::new(self.replenish_program_cache(
             callbacks,
             &program_accounts_map,
+            config.check_program_modification_slot,
             config.limit_to_load_programs,
         )));
 
@@ -520,16 +525,22 @@ impl<FG: ForkGraph> TransactionBatchProcessor<FG> {
         &self,
         callback: &CB,
         program_accounts_map: &HashMap<Pubkey, u64>,
+        check_program_modification_slot: bool,
         limit_to_load_programs: bool,
     ) -> ProgramCacheForTxBatch {
         let mut missing_programs: Vec<(Pubkey, (ProgramCacheMatchCriteria, u64))> =
             program_accounts_map
                 .iter()
                 .map(|(pubkey, count)| {
-                    (
-                        *pubkey,
-                        (callback.get_program_match_criteria(pubkey), *count),
-                    )
+                    let match_criteria = if check_program_modification_slot {
+                        get_program_modification_slot(callback, pubkey)
+                            .map_or(ProgramCacheMatchCriteria::Tombstone, |slot| {
+                                ProgramCacheMatchCriteria::DeployedOnOrAfterSlot(slot)
+                            })
+                    } else {
+                        ProgramCacheMatchCriteria::NoCriteria
+                    };
+                    (*pubkey, (match_criteria, *count))
                 })
                 .collect();
 
@@ -1301,7 +1312,7 @@ mod tests {
         let mut account_maps: HashMap<Pubkey, u64> = HashMap::new();
         account_maps.insert(key, 4);
 
-        batch_processor.replenish_program_cache(&mock_bank, &account_maps, true);
+        batch_processor.replenish_program_cache(&mock_bank, &account_maps, false, true);
     }
 
     #[test]
@@ -1327,6 +1338,7 @@ mod tests {
             let result = batch_processor.replenish_program_cache(
                 &mock_bank,
                 &account_maps,
+                false,
                 limit_to_load_programs,
             );
             assert!(!result.hit_max_limit);
@@ -1858,7 +1870,8 @@ mod tests {
                     let maps = account_maps.clone();
                     let programs = programs.clone();
                     thread::spawn(move || {
-                        let result = processor.replenish_program_cache(&local_bank, &maps, true);
+                        let result =
+                            processor.replenish_program_cache(&local_bank, &maps, false, true);
                         for key in &programs {
                             let cache_entry = result.find(key);
                             assert!(matches!(

@@ -98,10 +98,7 @@ use {
     solana_perf::perf_libs,
     solana_program_runtime::{
         invoke_context::BuiltinFunctionWithContext,
-        loaded_programs::{
-            ProgramCacheEntry, ProgramCacheEntryOwner, ProgramCacheEntryType,
-            ProgramCacheMatchCriteria,
-        },
+        loaded_programs::ProgramCacheEntry,
         timings::{ExecuteTimingType, ExecuteTimings},
     },
     solana_sdk::{
@@ -109,8 +106,7 @@ use {
             create_account_shared_data_with_fields as create_account, from_account, Account,
             AccountSharedData, InheritableAccountFields, ReadableAccount, WritableAccount,
         },
-        account_utils::StateMut,
-        bpf_loader_upgradeable::{self, UpgradeableLoaderState},
+        bpf_loader_upgradeable,
         clock::{
             BankId, Epoch, Slot, SlotCount, SlotIndex, UnixTimestamp, DEFAULT_HASHES_PER_TICK,
             DEFAULT_TICKS_PER_SECOND, INITIAL_RENT_EPOCH, MAX_PROCESSING_AGE,
@@ -133,7 +129,6 @@ use {
         incinerator,
         inflation::Inflation,
         inner_instruction::InnerInstructions,
-        loader_v4,
         message::{AccountKeys, SanitizedMessage},
         native_loader,
         native_token::LAMPORTS_PER_SOL,
@@ -1034,6 +1029,7 @@ impl Bank {
         accounts_update_notifier: Option<AccountsUpdateNotifier>,
         #[allow(unused)] collector_id_for_tests: Option<Pubkey>,
         exit: Arc<AtomicBool>,
+        #[allow(unused)] genesis_hash: Option<Hash>,
     ) -> Self {
         let accounts_db = AccountsDb::new_with_config(
             paths,
@@ -1055,7 +1051,7 @@ impl Bank {
         #[cfg(not(feature = "dev-context-only-utils"))]
         bank.process_genesis_config(genesis_config);
         #[cfg(feature = "dev-context-only-utils")]
-        bank.process_genesis_config(genesis_config, collector_id_for_tests);
+        bank.process_genesis_config(genesis_config, collector_id_for_tests, genesis_hash);
 
         bank.finish_init(
             genesis_config,
@@ -2926,6 +2922,7 @@ impl Bank {
         &mut self,
         genesis_config: &GenesisConfig,
         #[cfg(feature = "dev-context-only-utils")] collector_id_for_tests: Option<Pubkey>,
+        #[cfg(feature = "dev-context-only-utils")] genesis_hash: Option<Hash>,
     ) {
         // Bootstrap validator collects fees until `new_from_parent` is called.
         self.fee_rate_governor = genesis_config.fee_rate_governor.clone();
@@ -2962,10 +2959,15 @@ impl Bank {
         self.collector_id =
             collector_id.expect("genesis processing failed because no staked nodes exist");
 
-        self.blockhash_queue.write().unwrap().genesis_hash(
-            &genesis_config.hash(),
-            self.fee_rate_governor.lamports_per_signature,
-        );
+        #[cfg(not(feature = "dev-context-only-utils"))]
+        let genesis_hash = genesis_config.hash();
+        #[cfg(feature = "dev-context-only-utils")]
+        let genesis_hash = genesis_hash.unwrap_or(genesis_config.hash());
+
+        self.blockhash_queue
+            .write()
+            .unwrap()
+            .genesis_hash(&genesis_hash, self.fee_rate_governor.lamports_per_signature);
 
         self.hashes_per_tick = genesis_config.hashes_per_tick();
         self.ticks_per_slot = genesis_config.ticks_per_slot();
@@ -3233,6 +3235,11 @@ impl Bank {
         )
     }
 
+    #[cfg(feature = "dev-context-only-utils")]
+    pub fn register_recent_blockhash_for_test(&self, hash: &Hash) {
+        self.register_recent_blockhash(hash, &BankWithScheduler::no_scheduler_available());
+    }
+
     /// Tell the bank which Entry IDs exist on the ledger. This function assumes subsequent calls
     /// correspond to later entries, and will boot the oldest ones once its internal cache is full.
     /// Once boot, the bank will reject transactions using that `hash`.
@@ -3407,6 +3414,7 @@ impl Bank {
             &mut timings,
             TransactionProcessingConfig {
                 account_overrides: Some(&account_overrides),
+                check_program_modification_slot: self.check_program_modification_slot,
                 compute_budget: self.compute_budget(),
                 log_messages_bytes_limit: None,
                 limit_to_load_programs: true,
@@ -4840,6 +4848,7 @@ impl Bank {
             timings,
             TransactionProcessingConfig {
                 account_overrides: None,
+                check_program_modification_slot: self.check_program_modification_slot,
                 compute_budget: self.compute_budget(),
                 log_messages_bytes_limit,
                 limit_to_load_programs: false,
@@ -6257,24 +6266,6 @@ impl Bank {
         );
     }
 
-    /// Remove a built-in instruction processor
-    pub fn remove_builtin(&mut self, program_id: Pubkey, name: &str) {
-        debug!("Removing program {}", program_id);
-        // Don't remove the account since the bank expects the account state to
-        // be idempotent
-        self.transaction_processor.add_builtin(
-            self,
-            program_id,
-            name,
-            ProgramCacheEntry::new_tombstone(
-                self.slot,
-                ProgramCacheEntryOwner::NativeLoader,
-                ProgramCacheEntryType::Closed,
-            ),
-        );
-        debug!("Removed program {}", program_id);
-    }
-
     pub fn add_precompile(&mut self, program_id: &Pubkey) {
         debug!("Adding precompiled program {}", program_id);
         self.add_precompiled_account(program_id);
@@ -6751,8 +6742,12 @@ impl Bank {
         false
     }
 
-    pub fn check_program_modification_slot(&mut self) {
-        self.check_program_modification_slot = true;
+    pub fn check_program_modification_slot(&self) -> bool {
+        self.check_program_modification_slot
+    }
+
+    pub fn set_check_program_modification_slot(&mut self, check: bool) {
+        self.check_program_modification_slot = check;
     }
 
     pub fn fee_structure(&self) -> &FeeStructure {
@@ -6766,40 +6761,6 @@ impl Bank {
     pub fn add_builtin(&self, program_id: Pubkey, name: &str, builtin: ProgramCacheEntry) {
         self.transaction_processor
             .add_builtin(self, program_id, name, builtin)
-    }
-
-    /// Find the slot in which the program was most recently modified.
-    /// Returns slot 0 for programs deployed with v1/v2 loaders, since programs deployed
-    /// with those loaders do not retain deployment slot information.
-    /// Returns an error if the program's account state can not be found or parsed.
-    fn program_modification_slot(&self, pubkey: &Pubkey) -> transaction::Result<Slot> {
-        let program = self
-            .get_account(pubkey)
-            .ok_or(TransactionError::ProgramAccountNotFound)?;
-        if bpf_loader_upgradeable::check_id(program.owner()) {
-            if let Ok(UpgradeableLoaderState::Program {
-                programdata_address,
-            }) = program.state()
-            {
-                let programdata = self
-                    .get_account(&programdata_address)
-                    .ok_or(TransactionError::ProgramAccountNotFound)?;
-                if let Ok(UpgradeableLoaderState::ProgramData {
-                    slot,
-                    upgrade_authority_address: _,
-                }) = programdata.state()
-                {
-                    return Ok(slot);
-                }
-            }
-            Err(TransactionError::ProgramAccountNotFound)
-        } else if loader_v4::check_id(program.owner()) {
-            let state = solana_loader_v4_program::get_state(program.data())
-                .map_err(|_| TransactionError::ProgramAccountNotFound)?;
-            Ok(state.slot)
-        } else {
-            Ok(0)
-        }
     }
 }
 
@@ -6818,17 +6779,6 @@ impl TransactionProcessingCallback for Bank {
             .accounts_db
             .load_with_fixed_root(&self.ancestors, pubkey)
             .map(|(acc, _)| acc)
-    }
-
-    fn get_program_match_criteria(&self, program: &Pubkey) -> ProgramCacheMatchCriteria {
-        if self.check_program_modification_slot {
-            self.program_modification_slot(program)
-                .map_or(ProgramCacheMatchCriteria::Tombstone, |slot| {
-                    ProgramCacheMatchCriteria::DeployedOnOrAfterSlot(slot)
-                })
-        } else {
-            ProgramCacheMatchCriteria::NoCriteria
-        }
     }
 
     // NOTE: must hold idempotent for the same set of arguments
@@ -6959,6 +6909,7 @@ impl Bank {
             None,
             Some(Pubkey::new_unique()),
             Arc::default(),
+            None,
         )
     }
 
@@ -6982,6 +6933,7 @@ impl Bank {
             None,
             Some(Pubkey::new_unique()),
             Arc::default(),
+            None,
         )
     }
 
