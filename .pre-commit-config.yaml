@@ -11,10 +11,10 @@
 # All pre-commit commands are to be run from the root dir of the repo,
 # or wherever the '.pre-commit-config.yaml' file is located.
 #
-# Hooks default (local) installation:
+# Default hooks installation:
 #   $pre-commit install
 #
-# Hooks (local) removal:
+# Remove all hooks:
 #   $pre-commit uninstall
 #
 # Install only a subset of the hooks:
@@ -26,30 +26,24 @@
 #   $pre-commit run
 #
 # Run default hooks on all files in repo:
+# Primarily for CI. Devs can optionally use it.
 #   $pre-commit run --all-files
 #
-# [For CI/DevOps only]
+# [For CI/DevOps use only]
 # Hook repos version update (run in the root dir):
 #   $pre-commit autoupdate
+#
+# I don't want to manually install pre-commit every time I clone this repo or any other
+# repo that supports the precommit tool.
+# Run this once on your dev machine:
+#   $git config --global init.templateDir ~/.git-template
+#   $pre-commit init-templatedir ~/.git-template
 
-default_install_hook_types: [pre-commit, pre-push]
+default_install_hook_types: [pre-commit]
 
 default_stages: [pre-commit]
 
 repos:
-    # Rust hooks.
-    - repo: https://github.com/doublify/pre-commit-rust
-      rev: v1.0
-      hooks:
-        # FIXME: enable fmt hook when it no longer emits warnings with
-        # stable build. Currently it requires nightly build.
-        # Until then, devs should run `cargo +nightly fmt` manually.
-        #- id: fmt
-        - id: clippy
-          stages: [pre-push]
-        - id: cargo-check
-          stages: [pre-push]
-
     # Language-agnostic hooks.
     - repo: https://github.com/pre-commit/pre-commit-hooks
       rev: v4.6.0
