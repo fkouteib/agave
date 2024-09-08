@@ -68,3 +68,18 @@ repos:
       rev: v8.16.1
       hooks:
         - id: gitleaks
+
+    # Rust-specific hooks.
+    - repo: local
+      hooks:
+        - id: fmt
+          name: Rust formatter
+          language: rust
+          pass_filenames: false
+          entry: ./cargo nightly fmt
+        - id: clippy
+          name: Rust linter
+          language: rust
+          pass_filenames: false
+          entry: ./cargo nightly clippy
+          stages: [pre-push]
