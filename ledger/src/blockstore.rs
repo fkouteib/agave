@@ -312,6 +312,9 @@ impl Blockstore {
         self.db
     }
 
+    pub fn db_ref(&self) -> &Arc<Database> {
+        &self.db
+    }
     pub fn ledger_path(&self) -> &PathBuf {
         &self.ledger_path
     }
@@ -2898,28 +2901,31 @@ impl Blockstore {
         keys_with_writable: impl Iterator<Item = (&'a Pubkey, bool)>,
         status: TransactionStatusMeta,
         transaction_index: usize,
+        db_write_batch: Option<&mut WriteBatch<'_>>,
     ) -> Result<()> {
+        let batch = db_write_batch.is_some();
         let status = status.into();
         let transaction_index = u32::try_from(transaction_index)
             .map_err(|_| BlockstoreError::TransactionIndexOverflow)?;
         self.transaction_status_cf
             .put_protobuf((signature, slot), &status)?;
 
-        let mut write_batch = self.db.batch()?;
+        let default_wrb = &mut WriteBatch::default();
+        let write_batch = db_write_batch.unwrap_or(default_wrb);
 
         for (address, writeable) in keys_with_writable {
-            write_batch.put::<cf::AddressSignatures>(
-                (*address, slot, transaction_index, signature),
-                &AddressSignatureMeta { writeable },
-            )?;
+            if batch {
+                write_batch.put::<cf::AddressSignatures>(
+                    (*address, slot, transaction_index, signature),
+                    &AddressSignatureMeta { writeable },
+                )?;
+            } else {
+                self.address_signatures_cf.put(
+                    (*address, slot, transaction_index, signature),
+                    &AddressSignatureMeta { writeable },
+                )?;
+            }
         }
-
-        self.db.write(write_batch).inspect_err(|e| {
-            error!(
-                "Error: {:?} while submitting write batch of tx status for slot {:?}",
-                e, slot
-            )
-        })?;
 
         Ok(())
     }
@@ -8710,6 +8716,7 @@ pub mod tests {
                     ..TransactionStatusMeta::default()
                 },
                 0,
+                None,
             )
             .unwrap();
 
@@ -9094,6 +9101,7 @@ pub mod tests {
                 vec![(&address0, true)].into_iter(),
                 TransactionStatusMeta::default(),
                 0,
+                None,
             )
             .unwrap();
         blockstore
@@ -9103,6 +9111,7 @@ pub mod tests {
                 vec![(&address1, true)].into_iter(),
                 TransactionStatusMeta::default(),
                 0,
+                None,
             )
             .unwrap();
 
@@ -9471,6 +9480,7 @@ pub mod tests {
                     vec![(&address0, true), (&address1, false)].into_iter(),
                     TransactionStatusMeta::default(),
                     x as usize,
+                    None,
                 )
                 .unwrap();
         }
@@ -9484,6 +9494,7 @@ pub mod tests {
                     vec![(&address0, true), (&address1, false)].into_iter(),
                     TransactionStatusMeta::default(),
                     x as usize,
+                    None,
                 )
                 .unwrap();
         }
@@ -9496,6 +9507,7 @@ pub mod tests {
                     vec![(&address0, true), (&address1, false)].into_iter(),
                     TransactionStatusMeta::default(),
                     x as usize,
+                    None,
                 )
                 .unwrap();
         }
@@ -9509,6 +9521,7 @@ pub mod tests {
                     vec![(&address0, true), (&address1, false)].into_iter(),
                     TransactionStatusMeta::default(),
                     x as usize,
+                    None,
                 )
                 .unwrap();
         }
@@ -9596,6 +9609,7 @@ pub mod tests {
                                 .map(|key| (key, true)),
                             TransactionStatusMeta::default(),
                             counter,
+                            None,
                         )
                         .unwrap();
                     counter += 1;
@@ -9627,6 +9641,7 @@ pub mod tests {
                                 .map(|key| (key, true)),
                             TransactionStatusMeta::default(),
                             counter,
+                            None,
                         )
                         .unwrap();
                     counter += 1;
