@@ -108,7 +108,7 @@ pub const MAX_COMPLETED_SLOTS_IN_CHANNEL: usize = 100_000;
 pub const MAX_DATA_SHREDS_PER_SLOT: usize = 32_768;
 
 // Used for a retry mechanism with sleeps on mapping transactions to statuses.
-const NUM_MAP_TX_TO_STATUS_RETRIES: usize = 1_000;
+const NUM_MAP_TX_TO_STATUS_RETRIES: usize = 100;
 
 pub type CompletedSlotsSender = Sender<Vec<Slot>>;
 pub type CompletedSlotsReceiver = Receiver<Vec<Slot>>;
