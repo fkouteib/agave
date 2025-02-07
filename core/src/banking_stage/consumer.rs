@@ -905,7 +905,7 @@ mod tests {
                 atomic::{AtomicBool, AtomicU64},
                 RwLock,
             },
-            thread::{Builder, JoinHandle},
+            thread::{self, Builder, JoinHandle},
             time::Duration,
         },
         transaction::MessageHash,
@@ -1894,6 +1894,35 @@ mod tests {
         }
 
         Blockstore::destroy(ledger_path.path()).unwrap();
+    }
+
+    #[test]
+    fn repeat_these_tests() {
+        let handles: Vec<_> = (0..250)
+            .flat_map(|_| {
+                vec![
+                    thread::spawn(|| {
+                        test_write_persist_transaction_status();
+                    }),
+                    thread::spawn(|| {
+                        test_write_persist_loaded_addresses();
+                    }),
+                ]
+            })
+            .collect();
+
+        let mut pass_count = 0;
+        let mut fail_count = 0;
+
+        for handle in handles {
+            if handle.join().is_ok() {
+                pass_count += 1;
+            } else {
+                fail_count += 1;
+            }
+        }
+
+        println!("Pass: {}, Fail: {}", pass_count, fail_count);
     }
 
     #[test]
