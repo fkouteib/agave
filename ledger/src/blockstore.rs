@@ -77,6 +77,8 @@ use {
             atomic::{AtomicBool, AtomicU64, Ordering},
             Arc, Mutex, RwLock,
         },
+        thread::sleep,
+        time::Duration,
     },
     tar,
     tempfile::{Builder, TempDir},
@@ -106,6 +108,9 @@ pub const MAX_COMPLETED_SLOTS_IN_CHANNEL: usize = 100_000;
 // 32K shreds would allow ~320K peak TPS
 // (32K shreds per slot * 4 TX per shred * 2.5 slots per sec)
 pub const MAX_DATA_SHREDS_PER_SLOT: usize = 32_768;
+
+// Used for a retry mechanism with sleeps on mapping transactions to statuses.
+const NUM_MAP_TX_TO_STATUS_RETRIES: usize = 1_000;
 
 pub type CompletedSlotsSender = Sender<Vec<Slot>>;
 pub type CompletedSlotsReceiver = Receiver<Vec<Slot>>;
@@ -2806,12 +2811,19 @@ impl Blockstore {
         iterator
             .map(|transaction| {
                 let signature = transaction.signatures[0];
-                Ok(VersionedTransactionWithStatusMeta {
-                    transaction,
-                    meta: self
-                        .read_transaction_status((signature, slot))?
-                        .ok_or(BlockstoreError::MissingTransactionMetadata)?,
-                })
+                let mut attempts = 0;
+                let tx_status = loop {
+                    if let Some(status) = self.read_transaction_status((signature, slot))? {
+                        break Some(status);
+                    } else if attempts >= NUM_MAP_TX_TO_STATUS_RETRIES {
+                        break None;
+                    } else {
+                        sleep(Duration::from_millis(1));
+                        attempts += 1;
+                    }
+                };
+                let meta = tx_status.ok_or(BlockstoreError::MissingTransactionMetadata)?;
+                Ok(VersionedTransactionWithStatusMeta { transaction, meta })
             })
             .collect()
     }
