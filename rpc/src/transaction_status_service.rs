@@ -5,8 +5,12 @@
 
 use {
     crate::transaction_notifier_interface::TransactionNotifierArc,
-    crossbeam_channel::{Receiver, RecvTimeoutError},
+    crossbeam_channel::{Receiver, TryRecvError},
     itertools::izip,
+    rayon::{
+        iter::{ParallelDrainRange, ParallelIterator},
+        ThreadPoolBuilder,
+    },
     solana_clock::Slot,
     solana_ledger::{
         blockstore::{Blockstore, BlockstoreError},
@@ -26,7 +30,7 @@ use {
             atomic::{AtomicBool, AtomicU64, Ordering},
             Arc,
         },
-        thread::{self, Builder, JoinHandle},
+        thread::{self, sleep, Builder, JoinHandle},
         time::Duration,
     },
     thiserror::Error,
@@ -47,6 +51,11 @@ type Result<T> = std::result::Result<T, Error>;
 const TSS_TEST_QUIESCE_NUM_RETRIES: usize = 100;
 #[cfg(feature = "dev-context-only-utils")]
 const TSS_TEST_QUIESCE_SLEEP_TIME_MS: u64 = 50;
+
+const NUM_TSS_WORKER_THREADS: usize = 8;
+
+const TSS_MESSAGES_DEFAULT_BATCH_SIZE: usize = 1024;
+const TSS_MESSAGES_MAX_BATCH_SIZE: usize = TSS_MESSAGES_DEFAULT_BATCH_SIZE;
 
 pub struct TransactionStatusService {
     thread_hdl: JoinHandle<()>,
@@ -73,40 +82,70 @@ impl TransactionStatusService {
                 let transaction_status_receiver = transaction_status_receiver.clone();
                 move || {
                     info!("{} has started", Self::SERVICE_NAME);
+
+                    let worker_thread_pool = ThreadPoolBuilder::new()
+                        .num_threads(NUM_TSS_WORKER_THREADS)
+                        .build()
+                        .unwrap();
+
+                    let mut messages = Vec::with_capacity(TSS_MESSAGES_MAX_BATCH_SIZE);
+
                     loop {
                         if exit.load(Ordering::Relaxed) {
                             break;
                         }
 
-                        let message = match transaction_status_receiver
-                            .recv_timeout(Duration::from_secs(1))
-                        {
-                            Ok(message) => message,
-                            Err(err @ RecvTimeoutError::Disconnected) => {
-                                info!("{} is stopping because: {err}", Self::SERVICE_NAME);
-                                break;
-                            }
-                            Err(RecvTimeoutError::Timeout) => {
-                                continue;
-                            }
-                        };
+                        // let queue_len = transaction_status_receiver.len();
+                        // let batch_size = if queue_len > 20_000 {
+                        //     TSS_MESSAGES_MAX_BATCH_SIZE
+                        // } else {
+                        //     TSS_MESSAGES_DEFAULT_BATCH_SIZE
+                        // };
 
-                        match Self::write_transaction_status_batch(
-                            message,
-                            &max_complete_transaction_status_slot,
-                            enable_rpc_transaction_history,
-                            transaction_notifier.clone(),
-                            &blockstore,
-                            enable_extended_tx_metadata_storage,
-                            depenency_tracker.clone(),
-                        ) {
-                            Ok(_) => {}
-                            Err(err) => {
-                                error!("{} is stopping because: {err}", Self::SERVICE_NAME);
-                                exit.store(true, Ordering::Relaxed);
-                                break;
+                        for _ in 0..TSS_MESSAGES_DEFAULT_BATCH_SIZE {
+                            match transaction_status_receiver.try_recv() {
+                                Ok(message) => {
+                                    messages.push(message);
+                                }
+                                Err(TryRecvError::Empty) => {
+                                    if messages.is_empty() {
+                                        sleep(Duration::from_millis(20));
+                                        continue;
+                                    } else {
+                                        break;
+                                    }
+                                }
+                                Err(err @ TryRecvError::Disconnected) => {
+                                    info!("{} is stopping because: {err}", Self::SERVICE_NAME);
+                                    break;
+                                }
                             }
                         }
+
+                        worker_thread_pool.install(|| {
+                            let blockstore = Arc::clone(&blockstore);
+                            let transaction_notifier = transaction_notifier.clone();
+                            let exit_clone = Arc::clone(&exit);
+                            let depenency_tracker = depenency_tracker.clone();
+
+                            messages.par_drain(..).for_each(|message| {
+                                match Self::write_transaction_status_batch(
+                                    message,
+                                    &max_complete_transaction_status_slot,
+                                    enable_rpc_transaction_history,
+                                    transaction_notifier.clone(),
+                                    &blockstore,
+                                    enable_extended_tx_metadata_storage,
+                                    depenency_tracker.clone(),
+                                ) {
+                                    Ok(_) => {}
+                                    Err(err) => {
+                                        error!("{} is stopping because: {err}", Self::SERVICE_NAME);
+                                        exit_clone.store(true, Ordering::Relaxed);
+                                    }
+                                }
+                            });
+                        });
                     }
                     info!("{} has stopped", Self::SERVICE_NAME);
                 }
