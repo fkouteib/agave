@@ -5,7 +5,7 @@
 
 use {
     crate::transaction_notifier_interface::TransactionNotifierArc,
-    crossbeam_channel::{Receiver, RecvTimeoutError},
+    crossbeam_channel::{Receiver, TryRecvError},
     itertools::izip,
     solana_clock::Slot,
     solana_ledger::{
@@ -23,10 +23,10 @@ use {
     },
     std::{
         sync::{
-            atomic::{AtomicBool, AtomicU64, Ordering},
+            atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering},
             Arc,
         },
-        thread::{self, Builder, JoinHandle},
+        thread::{self, sleep, Builder, JoinHandle},
         time::Duration,
     },
     thiserror::Error,
@@ -74,40 +74,64 @@ impl TransactionStatusService {
             .name("solTxStatusWrtr".to_string())
             .spawn(move || {
                 info!("{} has started", Self::SERVICE_NAME);
+
+                let outstanding_thread_count = Arc::new(AtomicUsize::new(0));
                 loop {
                     if exit.load(Ordering::Relaxed) {
                         break;
                     }
 
-                    let message = match transaction_status_receiver_handle
-                        .recv_timeout(Duration::from_secs(1))
-                    {
+                    let message = match transaction_status_receiver_handle.try_recv() {
                         Ok(message) => message,
-                        Err(err @ RecvTimeoutError::Disconnected) => {
+                        Err(err @ TryRecvError::Disconnected) => {
                             info!("{} is stopping because: {err}", Self::SERVICE_NAME);
                             break;
                         }
-                        Err(RecvTimeoutError::Timeout) => {
+                        Err(TryRecvError::Empty) => {
+                            // TSS is bandwidth sensitive at high TPS, but not necessarily
+                            // latency sensitive. We use a global thread pool to handle
+                            // bursts of work below. This sleep is intended to balance that
+                            // out so other users of the pool can make progress while TSS
+                            // builds up a backlog for the next burst.
+                            sleep(Duration::from_millis(50));
                             continue;
                         }
                     };
 
-                    match Self::write_transaction_status_batch(
-                        message,
-                        &max_complete_transaction_status_slot,
-                        enable_rpc_transaction_history,
-                        transaction_notifier.clone(),
-                        &blockstore,
-                        enable_extended_tx_metadata_storage,
-                        depenency_tracker.clone(),
+                    let max_complete_transaction_status_slot =
+                        Arc::clone(&max_complete_transaction_status_slot);
+                    let blockstore = Arc::clone(&blockstore);
+                    let transaction_notifier = transaction_notifier.clone();
+                    let exit_clone = Arc::clone(&exit);
+                    let outstanding_thread_count_handle = Arc::clone(&outstanding_thread_count);
+                    let dependency_tracker = depenency_tracker.clone();
+
+                    outstanding_thread_count.fetch_add(1, Ordering::Relaxed);
+
+                    rayon::spawn(move || {
+                        match Self::write_transaction_status_batch(
+                            message,
+                            &max_complete_transaction_status_slot,
+                            enable_rpc_transaction_history,
+                            transaction_notifier,
+                            &blockstore,
+                            enable_extended_tx_metadata_storage,
+                            dependency_tracker,
                     ) {
-                        Ok(_) => {}
-                        Err(err) => {
-                            error!("{} is stopping because: {err}", Self::SERVICE_NAME);
-                            exit.store(true, Ordering::Relaxed);
-                            break;
+                            Ok(_) => {}
+                            Err(err) => {
+                                error!("{} is stopping because: {err}", Self::SERVICE_NAME);
+                                exit_clone.store(true, Ordering::Relaxed);
+                            }
                         }
-                    }
+                        outstanding_thread_count_handle.fetch_sub(1, Ordering::Relaxed);
+                    });
+                }
+
+                // Wait for the outstanding worker threads to finish before
+                // letting the main thread finish.
+                while outstanding_thread_count.load(Ordering::SeqCst) > 0 {
+                    sleep(Duration::from_millis(1));
                 }
                 info!("{} has stopped", Self::SERVICE_NAME);
             })
