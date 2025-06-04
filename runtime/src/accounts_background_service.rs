@@ -671,10 +671,20 @@ impl AccountsBackgroundService {
                             // slots >= bank.slot()
                             bank.force_flush_accounts_cache();
                             bank.clean_accounts();
-                            last_cleaned_block_height = bank.block_height();
-                            // See justification below for why we skip 'shrink' here.
-                            if bank.is_startup_verification_complete() {
-                                bank.shrink_ancient_slots();
+                            last_cleaned_slot = bank.slot();
+                            bank.shrink_ancient_slots();
+                            bank.shrink_candidate_slots();
+                            previous_shrink_time = Instant::now();
+                        } else {
+                            // Note that the flush will do an internal clean of the
+                            // cache up to bank.slot(), so should be safe as long
+                            // as any later snapshots that are taken are of
+                            // slots >= bank.slot()
+                            bank.flush_accounts_cache_if_needed();
+                            let duration_since_previous_shrink = previous_shrink_time.elapsed();
+                            if duration_since_previous_shrink > SHRINK_INTERVAL {
+                                bank.shrink_candidate_slots();
+                                previous_shrink_time = Instant::now();
                             }
                         }
                         // Do not 'shrink' until *after* the startup verification is complete.
