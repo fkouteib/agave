@@ -770,7 +770,7 @@ impl AccountsBackgroundService {
                     }
                     stats.record_and_maybe_submit(start_time.elapsed());
                     sleep(Duration::from_millis(INTERVAL_MS));
-                }
+                };
                 info!("AccountsBackgroundService has stopped");
             })
             .unwrap();
