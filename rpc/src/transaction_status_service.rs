@@ -4,7 +4,12 @@
 //! frozen banks it receives.
 
 use {
-    crate::transaction_notifier_interface::TransactionNotifierArc,
+    crate::{
+        slot_completion_tracker::{
+            SlotCompletionCallback, SlotCompletionCallbackImpl, SlotCompletionTracker,
+        },
+        transaction_notifier_interface::TransactionNotifierArc,
+    },
     crossbeam_channel::{Receiver, TryRecvError},
     itertools::izip,
     rayon::{
@@ -87,6 +92,13 @@ impl TransactionStatusService {
                         .build()
                         .unwrap();
 
+                    let slot_tracker = Arc::new(SlotCompletionTracker::new(Arc::clone(
+                        &max_complete_transaction_status_slot,
+                    )));
+
+                    let slot_completion_callback =
+                        Arc::new(SlotCompletionCallbackImpl::new(Arc::clone(&slot_tracker)));
+
                     let mut messages = Vec::with_capacity(TSS_MESSAGES_BATCH_SIZE);
 
                     loop {
@@ -119,16 +131,23 @@ impl TransactionStatusService {
                             let transaction_notifier = transaction_notifier.clone();
                             let exit_clone = Arc::clone(&exit);
                             let depenency_tracker = depenency_tracker.clone();
+                            let slot_completion_callback = slot_completion_callback.clone();
+                            let slot_tracker = slot_tracker.clone();
 
                             messages.par_drain(..).for_each(|message| {
+                                // Track batch start before processing
+                                if let TransactionStatusMessage::Batch(ref batch) = message {
+                                    slot_tracker.start_batch(batch.0.slot);
+                                }
+
                                 match Self::write_transaction_status_batch(
                                     message,
-                                    &max_complete_transaction_status_slot,
                                     enable_rpc_transaction_history,
                                     transaction_notifier.clone(),
                                     &blockstore,
                                     enable_extended_tx_metadata_storage,
                                     depenency_tracker.clone(),
+                                    slot_completion_callback.clone(),
                                 ) {
                                     Ok(_) => {}
                                     Err(err) => {
@@ -152,12 +171,12 @@ impl TransactionStatusService {
 
     fn write_transaction_status_batch(
         transaction_status_message: TransactionStatusMessage,
-        max_complete_transaction_status_slot: &Arc<AtomicU64>,
         enable_rpc_transaction_history: bool,
         transaction_notifier: Option<TransactionNotifierArc>,
         blockstore: &Blockstore,
         enable_extended_tx_metadata_storage: bool,
         dependency_tracker: Option<Arc<DependencyTracker>>,
+        slot_completion_callback: Arc<dyn SlotCompletionCallback>,
     ) -> Result<()> {
         match transaction_status_message {
             TransactionStatusMessage::Batch((
@@ -291,13 +310,20 @@ impl TransactionStatusService {
                         dependency_tracker.mark_this_and_all_previous_work_processed(work_sequence);
                     }
                 }
+
+                slot_completion_callback.on_slot_complete(slot);
             }
             TransactionStatusMessage::Freeze(bank) => {
+                let slot = bank.slot();
+
                 if !bank.is_frozen() {
-                    return Err(Error::NonFrozenBank(bank.slot()));
+                    return Err(Error::NonFrozenBank(slot));
                 }
                 Self::write_block_meta(&bank, blockstore)?;
-                max_complete_transaction_status_slot.fetch_max(bank.slot(), Ordering::SeqCst);
+
+                // Freeze messages updates max_complete_transaction_status_slot
+                // immediately since block metadata writing is not batched.
+                slot_completion_callback.on_slot_complete(slot);
             }
         }
         Ok(())
