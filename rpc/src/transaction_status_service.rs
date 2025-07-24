@@ -7,6 +7,7 @@ use {
     crate::transaction_notifier_interface::TransactionNotifierArc,
     crossbeam_channel::{Receiver, TryRecvError},
     itertools::izip,
+    rayon::ThreadPoolBuilder,
     solana_clock::Slot,
     solana_ledger::{
         blockstore::{Blockstore, BlockstoreError},
@@ -23,7 +24,7 @@ use {
     },
     std::{
         sync::{
-            atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering},
+            atomic::{AtomicBool, AtomicU64, Ordering},
             Arc,
         },
         thread::{self, sleep, Builder, JoinHandle},
@@ -47,6 +48,8 @@ type Result<T> = std::result::Result<T, Error>;
 const TSS_TEST_QUIESCE_NUM_RETRIES: usize = 100;
 #[cfg(feature = "dev-context-only-utils")]
 const TSS_TEST_QUIESCE_SLEEP_TIME_MS: u64 = 50;
+
+const NUM_TSS_WORKER_THREADS: usize = 4;
 
 pub struct TransactionStatusService {
     thread_hdl: JoinHandle<()>,
@@ -74,7 +77,11 @@ impl TransactionStatusService {
                 move || {
                     info!("{} has started", Self::SERVICE_NAME);
 
-                    let outstanding_thread_count = Arc::new(AtomicUsize::new(0));
+                    let worker_thread_pool = ThreadPoolBuilder::new()
+                        .num_threads(NUM_TSS_WORKER_THREADS)
+                        .build()
+                        .unwrap();
+
                     loop {
                         if exit.load(Ordering::Relaxed) {
                             break;
@@ -97,40 +104,37 @@ impl TransactionStatusService {
                             }
                         };
 
-                        let max_complete_transaction_status_slot =
-                            Arc::clone(&max_complete_transaction_status_slot);
-                        let blockstore = Arc::clone(&blockstore);
-                        let transaction_notifier = transaction_notifier.clone();
-                        let exit_clone = Arc::clone(&exit);
-                        let dependency_tracker = depenency_tracker.clone();
-                        let outstanding_thread_count_handle = Arc::clone(&outstanding_thread_count);
+                        worker_thread_pool.install(|| {
+                            rayon::scope(|s| {
+                                let max_complete_transaction_status_slot =
+                                    Arc::clone(&max_complete_transaction_status_slot);
+                                let blockstore = Arc::clone(&blockstore);
+                                let transaction_notifier = transaction_notifier.clone();
+                                let exit_clone = Arc::clone(&exit);
+                                let depenency_tracker = depenency_tracker.clone();
 
-                        outstanding_thread_count.fetch_add(1, Ordering::Relaxed);
-
-                        rayon::spawn(move || {
-                            match Self::write_transaction_status_batch(
-                                message,
-                                &max_complete_transaction_status_slot,
-                                enable_rpc_transaction_history,
-                                transaction_notifier,
-                                &blockstore,
-                                enable_extended_tx_metadata_storage,
-                                dependency_tracker,
-                            ) {
-                                Ok(_) => {}
-                                Err(err) => {
-                                    error!("{} is stopping because: {err}", Self::SERVICE_NAME);
-                                    exit_clone.store(true, Ordering::Relaxed);
-                                }
-                            }
-                            outstanding_thread_count_handle.fetch_sub(1, Ordering::Relaxed);
+                                s.spawn(move |_| {
+                                    match Self::write_transaction_status_batch(
+                                        message,
+                                        &max_complete_transaction_status_slot,
+                                        enable_rpc_transaction_history,
+                                        transaction_notifier,
+                                        &blockstore,
+                                        enable_extended_tx_metadata_storage,
+                                        depenency_tracker.clone(),
+                                    ) {
+                                        Ok(_) => {}
+                                        Err(err) => {
+                                            error!(
+                                                "{} is stopping because: {err}",
+                                                Self::SERVICE_NAME
+                                            );
+                                            exit_clone.store(true, Ordering::Relaxed);
+                                        }
+                                    }
+                                });
+                            });
                         });
-                    }
-
-                    // Wait for the outstanding worker threads to finish before
-                    // letting the main thread finish.
-                    while outstanding_thread_count.load(Ordering::SeqCst) > 0 {
-                        sleep(Duration::from_millis(1));
                     }
                     info!("{} has stopped", Self::SERVICE_NAME);
                 }
