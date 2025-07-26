@@ -103,12 +103,6 @@ impl TransactionStatusService {
                             break;
                         }
                         Err(TryRecvError::Empty) => {
-                            // TSS is bandwidth sensitive at high TPS, but not necessarily
-                            // latency sensitive. We use a global thread pool to handle
-                            // bursts of work below. This sleep is intended to balance that
-                            // out so other users of the pool can make progress while TSS
-                            // builds up a backlog for the next burst.
-                            sleep(Duration::from_millis(50));
                             continue;
                         }
                     };
