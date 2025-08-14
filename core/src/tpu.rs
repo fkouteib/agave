@@ -40,7 +40,7 @@ use {
     },
     solana_pubkey::Pubkey,
     solana_rpc::{
-        optimistically_confirmed_bank_tracker::BankNotificationSenderConfig,
+        optimistically_confirmed_bank_tracker::BankNotificationSender,
         rpc_subscriptions::RpcSubscriptions,
     },
     solana_runtime::{
@@ -133,7 +133,7 @@ impl Tpu {
         gossip_verified_vote_hash_sender: GossipVerifiedVoteHashSender,
         replay_vote_receiver: ReplayVoteReceiver,
         replay_vote_sender: ReplayVoteSender,
-        bank_notification_sender: Option<BankNotificationSenderConfig>,
+        bank_notification_sender: Option<BankNotificationSender>,
         tpu_coalesce: Duration,
         duplicate_confirmed_slot_sender: DuplicateConfirmedSlotsSender,
         client: ForwardingClientOption,
