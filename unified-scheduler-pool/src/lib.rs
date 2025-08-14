@@ -4537,10 +4537,7 @@ mod tests {
         let handler_context = &HandlerContext {
             thread_count: 0,
             log_messages_bytes_limit: None,
-            transaction_status_sender: Some(TransactionStatusSender {
-                sender,
-                dependency_tracker: None,
-            }),
+            transaction_status_sender: Some(TransactionStatusSender { sender }),
             replay_vote_sender: None,
             prioritization_fee_cache,
             banking_packet_receiver: never(),
@@ -4576,10 +4573,9 @@ mod tests {
                 }
                 assert_matches!(
                     receiver.try_recv(),
-                    Ok(TransactionStatusMessage::Batch((
-                        TransactionStatusBatch { .. },
-                        None, // no work sequence
-                    )))
+                    Ok(TransactionStatusMessage::Batch(
+                        TransactionStatusBatch { .. }
+                    ))
                 );
                 assert_matches!(
                     signal_receiver.try_recv(),
