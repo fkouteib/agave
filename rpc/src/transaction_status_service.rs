@@ -105,6 +105,21 @@ impl TransactionStatusService {
                         if exit.load(Ordering::Relaxed) {
                             break;
                         }
+                        let queue_len = transaction_status_receiver.len();
+
+                        if queue_len > 50_000 {
+                            if queue_len % 5000 == 0 {
+                                info!("TSS queue size: {queue_len}");
+                            }
+                        } else if queue_len > 10_000 {
+                            if queue_len % 5_000 == 0 {
+                                info!("TSS queue size: {queue_len}");
+                            }
+                        } else if queue_len > 1_000 {
+                            if queue_len % 500 == 0 {
+                                info!("TSS queue size: {queue_len}");
+                            }
+                        }
 
                         for _ in 0..TSS_MESSAGES_BATCH_SIZE {
                             match transaction_status_receiver.try_recv() {
