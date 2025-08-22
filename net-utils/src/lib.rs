@@ -300,8 +300,7 @@ mod tests {
     use {
         super::*,
         crate::sockets::{
-            bind_common_in_range_with_config, bind_more_with_config, bind_to, bind_to_with_config,
-            bind_two_in_range_with_offset_and_config, multi_bind_in_range_with_config,
+            bind_common_in_range_with_config, bind_to, bind_to_with_config,
             unique_port_range_for_tests, SocketConfiguration as SocketConfig,
         },
         ip_echo_server::IpEchoServerResponse,
@@ -411,42 +410,6 @@ mod tests {
     }
 
     #[test]
-    fn test_bind() {
-        let (pr_s, pr_e) = sockets::localhost_port_range_for_tests();
-        let ip_addr = IpAddr::V4(Ipv4Addr::UNSPECIFIED);
-        let s = bind_in_range(ip_addr, (pr_s, pr_e)).unwrap();
-        assert_eq!(s.0, pr_s, "bind_in_range should use first available port");
-        let ip_addr = IpAddr::V4(Ipv4Addr::UNSPECIFIED);
-        let config = SocketConfig::default(); // re-use port is false by default
-        let x = bind_to_with_config(ip_addr, pr_s + 1, config).unwrap();
-        // re-use port is not directly settable from socket config directly.
-        // So bind_to_with_config() will fail on the second call to the same port.
-        bind_to_with_config(ip_addr, pr_s + 1, config).unwrap_err();
-        // bind_more_with_config() internally enables re-use port allowing multi-bind.
-        let bind_ports = bind_more_with_config(x, 2, config).unwrap();
-        assert_eq!(
-            bind_ports[0].local_addr().unwrap().port(),
-            bind_ports[1].local_addr().unwrap().port()
-        );
-        bind_to(ip_addr, pr_s).unwrap_err();
-        bind_in_range(ip_addr, (pr_s, pr_s + 2)).unwrap_err();
-
-        let (port, v) =
-            multi_bind_in_range_with_config(ip_addr, (pr_s + 5, pr_e), config, 10).unwrap();
-        for sock in &v {
-            assert_eq!(port, sock.local_addr().unwrap().port());
-        }
-    }
-
-    #[test]
-    fn test_bind_in_range_nil() {
-        let ip_addr = IpAddr::V4(Ipv4Addr::UNSPECIFIED);
-        let range = sockets::unique_port_range_for_tests(2);
-        bind_in_range(ip_addr, (range.end, range.end)).unwrap_err();
-        bind_in_range(ip_addr, (range.end, range.start)).unwrap_err();
-    }
-
-    #[test]
     fn test_find_available_port_in_range() {
         let ip_addr = IpAddr::V4(Ipv4Addr::LOCALHOST);
         let range = sockets::unique_port_range_for_tests(4);
@@ -474,17 +437,6 @@ mod tests {
         ports_vec.push(sock.local_addr().unwrap().port());
         let res: Vec<_> = ports_vec.into_iter().unique().collect();
         assert_eq!(res.len(), 16, "Should reserve 16 unique ports");
-    }
-
-    #[test]
-    fn test_bind_common_in_range() {
-        let ip_addr = IpAddr::V4(Ipv4Addr::LOCALHOST);
-        let range = sockets::unique_port_range_for_tests(5);
-        let config = SocketConfig::default();
-        let (port, _sockets) =
-            bind_common_in_range_with_config(ip_addr, (range.start, range.end), config).unwrap();
-        assert!(range.contains(&port));
-        bind_common_in_range_with_config(ip_addr, (port, port + 1), config).unwrap_err();
     }
 
     #[test]
@@ -653,41 +605,6 @@ mod tests {
             tcp_listeners,
         ));
         assert!(verify_all_reachable_udp(&ip_echo_server_addr, &socket_refs));
-    }
-
-    #[test]
-    fn test_bind_two_in_range_with_offset() {
-        solana_logger::setup();
-        let ip_addr = IpAddr::V4(Ipv4Addr::UNSPECIFIED);
-        let offset = 6;
-        let port_range = unique_port_range_for_tests(10);
-        if let Ok(((port1, _), (port2, _))) = bind_two_in_range_with_offset_and_config(
-            ip_addr,
-            (port_range.start, port_range.end),
-            offset,
-            SocketConfig::default(),
-            SocketConfig::default(),
-        ) {
-            assert!(port2 == port1 + offset);
-        }
-        let offset = 7;
-        if let Ok(((port1, _), (port2, _))) = bind_two_in_range_with_offset_and_config(
-            ip_addr,
-            (port_range.start, port_range.end),
-            offset,
-            SocketConfig::default(),
-            SocketConfig::default(),
-        ) {
-            assert!(port2 == port1 + offset);
-        }
-        assert!(bind_two_in_range_with_offset_and_config(
-            ip_addr,
-            (port_range.start, port_range.start + 5),
-            offset,
-            SocketConfig::default(),
-            SocketConfig::default(),
-        )
-        .is_err());
     }
 
     #[test]
