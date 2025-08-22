@@ -59,7 +59,8 @@ const TSS_TEST_QUIESCE_SLEEP_TIME_MS: u64 = 50;
 
 const NUM_TSS_WORKER_THREADS: usize = 12;
 
-const TSS_MESSAGES_BATCH_SIZE: usize = 128;
+const TSS_MESSAGES_DEFAULT_BATCH_SIZE: usize = 128;
+const TSS_MESSAGES_MAX_BATCH_SIZE: usize = TSS_MESSAGES_DEFAULT_BATCH_SIZE * 4;
 
 pub struct TransactionStatusService {
     thread_hdl: JoinHandle<()>,
@@ -99,29 +100,23 @@ impl TransactionStatusService {
                     let slot_completion_callback =
                         Arc::new(SlotCompletionCallbackImpl::new(Arc::clone(&slot_tracker)));
 
-                    let mut messages = Vec::with_capacity(TSS_MESSAGES_BATCH_SIZE);
+                    let mut messages = Vec::with_capacity(TSS_MESSAGES_MAX_BATCH_SIZE);
 
                     loop {
                         if exit.load(Ordering::Relaxed) {
                             break;
                         }
+
                         let queue_len = transaction_status_receiver.len();
-
-                        if queue_len > 50_000 {
-                            if queue_len % 5000 == 0 {
-                                info!("TSS queue size: {queue_len}");
-                            }
+                        let batch_size = if queue_len > 50_000 {
+                            TSS_MESSAGES_MAX_BATCH_SIZE
                         } else if queue_len > 10_000 {
-                            if queue_len % 5_000 == 0 {
-                                info!("TSS queue size: {queue_len}");
-                            }
-                        } else if queue_len > 1_000 {
-                            if queue_len % 500 == 0 {
-                                info!("TSS queue size: {queue_len}");
-                            }
-                        }
+                            TSS_MESSAGES_MAX_BATCH_SIZE / 2
+                        } else {
+                            TSS_MESSAGES_DEFAULT_BATCH_SIZE
+                        };
 
-                        for _ in 0..TSS_MESSAGES_BATCH_SIZE {
+                        for _ in 0..batch_size {
                             match transaction_status_receiver.try_recv() {
                                 Ok(message) => {
                                     messages.push(message);
