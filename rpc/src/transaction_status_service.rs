@@ -57,7 +57,7 @@ const TSS_TEST_QUIESCE_NUM_RETRIES: usize = 100;
 #[cfg(feature = "dev-context-only-utils")]
 const TSS_TEST_QUIESCE_SLEEP_TIME_MS: u64 = 50;
 
-const NUM_TSS_WORKER_THREADS: usize = 8;
+const NUM_TSS_WORKER_THREADS: usize = 10;
 
 const TSS_MESSAGES_DEFAULT_BATCH_SIZE: usize = 128;
 const TSS_MESSAGES_MAX_BATCH_SIZE: usize = TSS_MESSAGES_DEFAULT_BATCH_SIZE * 8;
