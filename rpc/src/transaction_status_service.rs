@@ -59,8 +59,8 @@ const TSS_TEST_QUIESCE_SLEEP_TIME_MS: u64 = 50;
 
 const NUM_TSS_WORKER_THREADS: usize = 16;
 
-const TSS_MESSAGES_DEFAULT_BATCH_SIZE: usize = 2048;
-const TSS_MESSAGES_MAX_BATCH_SIZE: usize = TSS_MESSAGES_DEFAULT_BATCH_SIZE * 2;
+const TSS_MESSAGES_DEFAULT_BATCH_SIZE: usize = 64;
+const TSS_MESSAGES_MAX_BATCH_SIZE: usize = 128;
 
 pub struct TransactionStatusService {
     thread_hdl: JoinHandle<()>,
