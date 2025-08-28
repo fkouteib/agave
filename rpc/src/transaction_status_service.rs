@@ -59,8 +59,8 @@ const TSS_TEST_QUIESCE_SLEEP_TIME_MS: u64 = 50;
 
 const NUM_TSS_WORKER_THREADS: usize = 8;
 
-const TSS_MESSAGES_DEFAULT_BATCH_SIZE: usize = 256;
-const TSS_MESSAGES_MAX_BATCH_SIZE: usize = TSS_MESSAGES_DEFAULT_BATCH_SIZE * 4;
+const TSS_MESSAGES_DEFAULT_BATCH_SIZE: usize = 1024;
+const TSS_MESSAGES_MAX_BATCH_SIZE: usize = TSS_MESSAGES_DEFAULT_BATCH_SIZE;
 
 pub struct TransactionStatusService {
     thread_hdl: JoinHandle<()>,
@@ -107,21 +107,21 @@ impl TransactionStatusService {
                             break;
                         }
 
-                        let queue_len = transaction_status_receiver.len();
-                        let batch_size = if queue_len > 20_000 {
-                            TSS_MESSAGES_MAX_BATCH_SIZE
-                        } else {
-                            TSS_MESSAGES_DEFAULT_BATCH_SIZE
-                        };
+                        // let queue_len = transaction_status_receiver.len();
+                        // let batch_size = if queue_len > 20_000 {
+                        //     TSS_MESSAGES_MAX_BATCH_SIZE
+                        // } else {
+                        //     TSS_MESSAGES_DEFAULT_BATCH_SIZE
+                        // };
 
-                        for _ in 0..batch_size {
+                        for _ in 0..TSS_MESSAGES_DEFAULT_BATCH_SIZE {
                             match transaction_status_receiver.try_recv() {
                                 Ok(message) => {
                                     messages.push(message);
                                 }
                                 Err(TryRecvError::Empty) => {
                                     if messages.is_empty() {
-                                        sleep(Duration::from_millis(1));
+                                        sleep(Duration::from_millis(20));
                                         continue;
                                     } else {
                                         break;
