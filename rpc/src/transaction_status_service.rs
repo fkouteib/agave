@@ -312,7 +312,7 @@ impl TransactionStatusService {
                 }
 
                 if enable_rpc_transaction_history {
-                    blockstore.write_batch(status_and_memos_batch)?;
+                    blockstore.write_batch_dummy(status_and_memos_batch)?;
                 }
 
                 if let Some(dependency_tracker) = dependency_tracker.as_ref() {

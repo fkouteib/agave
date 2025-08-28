@@ -4658,6 +4658,10 @@ impl Blockstore {
     pub fn write_batch(&self, write_batch: WriteBatch) -> Result<()> {
         self.db.write(write_batch)
     }
+
+    pub fn write_batch_dummy(&self, _write_batch: WriteBatch) -> Result<()> {
+        Ok(())
+    }
 }
 
 // Updates the `completed_data_indexes` with a new shred `new_shred_index`.
