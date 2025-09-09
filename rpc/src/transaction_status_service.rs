@@ -13,7 +13,7 @@ use {
     crossbeam_channel::{Receiver, TryRecvError},
     itertools::izip,
     rayon::{
-        iter::{ParallelDrainRange, ParallelIterator},
+        iter::{IntoParallelIterator, ParallelIterator},
         ThreadPoolBuilder,
     },
     solana_clock::Slot,
@@ -59,9 +59,6 @@ const TSS_TEST_QUIESCE_SLEEP_TIME_MS: u64 = 50;
 
 const NUM_TSS_WORKER_THREADS: usize = 8;
 
-const TSS_MESSAGES_DEFAULT_BATCH_SIZE: usize = 1024;
-const TSS_MESSAGES_MAX_BATCH_SIZE: usize = TSS_MESSAGES_DEFAULT_BATCH_SIZE;
-
 const MESSAGE_BATCH_SIZE: usize = 40;
 
 pub struct TransactionStatusService {
@@ -102,8 +99,6 @@ impl TransactionStatusService {
                     let slot_completion_callback =
                         Arc::new(SlotCompletionCallbackImpl::new(Arc::clone(&slot_tracker)));
 
-                    let mut messages = Vec::with_capacity(TSS_MESSAGES_MAX_BATCH_SIZE);
-
                     let mut pending_message: Option<TransactionStatusMessage> = None;
 
                     loop {
@@ -121,7 +116,7 @@ impl TransactionStatusService {
                             break;
                         }
 
-                        let batch_messages = match Self::aggregate_messages(
+                        let mut messages = match Self::aggregate_messages(
                             &transaction_status_receiver,
                             &mut pending_message,
                         ) {
@@ -140,62 +135,46 @@ impl TransactionStatusService {
                             }
                         };
 
-                        // let queue_len = transaction_status_receiver.len();
-                        // let batch_size = if queue_len > 20_000 {
-                        //     TSS_MESSAGES_MAX_BATCH_SIZE
-                        // } else {
-                        //     TSS_MESSAGES_DEFAULT_BATCH_SIZE
-                        // };
-
-                        for _ in 0..TSS_MESSAGES_DEFAULT_BATCH_SIZE {
-                            match transaction_status_receiver.try_recv() {
-                                Ok(message) => {
-                                    messages.push(message);
-                                }
-                                Err(TryRecvError::Empty) => {
-                                    if messages.is_empty() {
-                                        sleep(Duration::from_millis(20));
-                                        continue;
-                                    } else {
-                                        break;
-                                    }
-                                }
-                                Err(err @ TryRecvError::Disconnected) => {
-                                    info!("{} is stopping because: {err}", Self::SERVICE_NAME);
-                                    break;
-                                }
-                            }
+                        if messages.is_empty() {
+                            sleep(Duration::from_millis(5));
+                            continue;
                         }
 
-                        worker_thread_pool.install(|| {
-                            let blockstore = Arc::clone(&blockstore);
-                            let transaction_notifier = transaction_notifier.clone();
-                            let depenency_tracker = depenency_tracker.clone();
-                            let slot_completion_callback = slot_completion_callback.clone();
-                            let slot_tracker = slot_tracker.clone();
-
-                            messages.par_drain(..).for_each(|message| {
-                                // Track batch start before processing
-                                let slot = match &message {
-                                    TransactionStatusMessage::Batch((batch, _)) => batch.slot,
-                                    TransactionStatusMessage::Freeze(bank) => bank.slot(),
-                                };
-                                slot_tracker.start_batch(slot);
-
-                                if let Err(err) = Self::write_transaction_status_batch(
-                                    batch_messages,
-                                    enable_rpc_transaction_history,
-                                    transaction_notifier.clone(),
-                                    &blockstore,
-                                    enable_extended_tx_metadata_storage,
-                                    depenency_tracker.clone(),
-                                    slot_completion_callback.clone(),
-                                ) {
-                                    error!("{} is stopping because: {err}", Self::SERVICE_NAME);
-                                    exit.store(true, Ordering::Relaxed);
-                                }
+                        let chunk_size = messages.len().div_ceil(NUM_TSS_WORKER_THREADS);
+                        // Drain messages into non-overlapping chunks
+                        let mut chunks = Vec::new();
+                        let mut drain = messages.drain(..);
+                        while !drain.as_slice().is_empty() {
+                            let chunk: Vec<_> = drain.by_ref().take(chunk_size).collect();
+                            if chunk.is_empty() {
+                                break;
+                            }
+                            chunks.push(chunk);
+                        }
+                        // Now process each chunk in parallel
+                        if !chunks.is_empty() {
+                            let slot = match &chunks[0][0] {
+                                TransactionStatusMessage::Batch((batch, _)) => batch.slot,
+                                TransactionStatusMessage::Freeze(bank) => bank.slot(),
+                            };
+                            slot_tracker.start_batch(slot);
+                            worker_thread_pool.install(|| {
+                                chunks.into_par_iter().for_each(|chunk| {
+                                    if let Err(err) = Self::write_transaction_status_batch(
+                                        chunk,
+                                        enable_rpc_transaction_history,
+                                        transaction_notifier.clone(),
+                                        &blockstore,
+                                        enable_extended_tx_metadata_storage,
+                                        depenency_tracker.clone(),
+                                        slot_completion_callback.clone(),
+                                    ) {
+                                        error!("{} is stopping because: {err}", Self::SERVICE_NAME);
+                                        exit.store(true, Ordering::Relaxed);
+                                    }
+                                });
                             });
-                        });
+                        }
                     }
                     info!("{} has stopped", Self::SERVICE_NAME);
                 }
