@@ -104,7 +104,6 @@ impl TransactionStatusService {
 
                     let mut messages = Vec::with_capacity(TSS_MESSAGES_MAX_BATCH_SIZE);
 
-
                     let mut pending_message: Option<TransactionStatusMessage> = None;
 
                     loop {
@@ -171,7 +170,6 @@ impl TransactionStatusService {
                         worker_thread_pool.install(|| {
                             let blockstore = Arc::clone(&blockstore);
                             let transaction_notifier = transaction_notifier.clone();
-                            let exit_clone = Arc::clone(&exit);
                             let depenency_tracker = depenency_tracker.clone();
                             let slot_completion_callback = slot_completion_callback.clone();
                             let slot_tracker = slot_tracker.clone();
@@ -184,18 +182,20 @@ impl TransactionStatusService {
                                 };
                                 slot_tracker.start_batch(slot);
 
-                        if let Err(err) = Self::write_transaction_status_batch(
-                            batch_messages,
-                            enable_rpc_transaction_history,
-                            transaction_notifier.clone(),
-                            &blockstore,
-                            enable_extended_tx_metadata_storage,
-                            depenency_tracker.clone(),
-                        ) {
-                            error!("{} is stopping because: {err}", Self::SERVICE_NAME);
-                            exit.store(true, Ordering::Relaxed);
-                            break;
-                        }
+                                if let Err(err) = Self::write_transaction_status_batch(
+                                    batch_messages,
+                                    enable_rpc_transaction_history,
+                                    transaction_notifier.clone(),
+                                    &blockstore,
+                                    enable_extended_tx_metadata_storage,
+                                    depenency_tracker.clone(),
+                                    slot_completion_callback.clone(),
+                                ) {
+                                    error!("{} is stopping because: {err}", Self::SERVICE_NAME);
+                                    exit.store(true, Ordering::Relaxed);
+                                }
+                            });
+                        });
                     }
                     info!("{} has stopped", Self::SERVICE_NAME);
                 }
@@ -246,7 +246,10 @@ impl TransactionStatusService {
                     }
                 }
                 _ => {
-                    unreachable!("Only TransactionStatusMessage::Batch is expected here. Freeze messages should have been handled by this point.");
+                    unreachable!(
+                        "Only TransactionStatusMessage::Batch is expected here. Freeze messages \
+                         should have been handled by this point."
+                    );
                 }
             }
         }
@@ -358,7 +361,7 @@ impl TransactionStatusService {
         }
 
         //fixme: add this line to right place for freeze and batch
-         slot_completion_callback.on_slot_complete(slot);
+        slot_completion_callback.on_slot_complete(slot);
 
         if let Some(dependency_tracker) = dependency_tracker.as_ref() {
             for work_id in work_ids {
