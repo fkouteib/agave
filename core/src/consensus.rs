@@ -1757,6 +1757,7 @@ pub fn reconcile_blockstore_roots_with_external_source(
     // so take a &mut param both to input (and output iff we update root)
     last_blockstore_root: &mut Slot,
 ) -> blockstore::Result<()> {
+    info!("went into reconcile_blockstore_roots_with_external_source()");
     let external_root = external_source.root();
     if *last_blockstore_root < external_root {
         // Ensure external_root itself to exist and be marked as rooted in the blockstore

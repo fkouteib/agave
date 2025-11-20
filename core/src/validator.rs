@@ -2022,6 +2022,11 @@ fn post_process_restored_tower(
 ) -> Result<Tower, String> {
     let mut should_require_tower = config.require_tower;
 
+    info!(
+        "went into post_process_restored_tower(), should_require_tower: {}",
+        should_require_tower
+    );
+
     let restored_tower = restored_tower.and_then(|tower| {
         let root_bank = bank_forks.root_bank();
         let slot_history = root_bank.get_slot_history();
@@ -2031,6 +2036,7 @@ fn post_process_restored_tower(
         if let Some(hard_fork_restart_slot) =
             maybe_cluster_restart_with_hard_fork(config, root_bank.slot())
         {
+            info!("entering hard fork restart slot check in tower restoration");
             // intentionally fail to restore tower; we're supposedly in a new hard fork; past
             // out-of-chain vote state doesn't make sense at all
             // what if --wait-for-supermajority again if the validator restarted?
@@ -2067,8 +2073,13 @@ fn post_process_restored_tower(
                     "tower_error",
                     ("error", format!("Unable to restore tower: {err}"), String),
                 );
+                error!("Unable to restore tower: {err}");
             }
             if should_require_tower && voting_has_been_active {
+                error!(
+                    "Requested mandatory tower restore failed: {err}. And there is an existing \
+                     vote_account containing actual votes."
+                );
                 return Err(format!(
                     "Requested mandatory tower restore failed: {err}. And there is an existing \
                      vote_account containing actual votes. Aborting due to possible conflicting \
@@ -2342,6 +2353,10 @@ impl<'a> ProcessBlockStore<'a> {
                 let restored_tower = Tower::restore(self.config.tower_storage.as_ref(), self.id);
                 if let Ok(tower) = &restored_tower {
                     // reconciliation attempt 1 of 2 with tower
+                    info!(
+                        "reconciling blockstore roots with tower root (round 1): {}",
+                        tower.root()
+                    );
                     reconcile_blockstore_roots_with_external_source(
                         ExternalRootSource::Tower(tower.root()),
                         self.blockstore,
@@ -2365,6 +2380,10 @@ impl<'a> ProcessBlockStore<'a> {
             ) {
                 // reconciliation attempt 2 of 2 with hard fork
                 // this should be #2 because hard fork root > tower root in almost all cases
+                info!(
+                    "reconciling blockstore roots with hard fork restart slot (round 2): {}",
+                    hard_fork_restart_slot
+                );
                 reconcile_blockstore_roots_with_external_source(
                     ExternalRootSource::HardFork(hard_fork_restart_slot),
                     self.blockstore,
