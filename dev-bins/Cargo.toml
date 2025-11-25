@@ -4,7 +4,6 @@ members = [
     "../banking-bench",
     "../bench-tps",
     "../dos",
-    "../ledger-tool",
 ]
 
 resolver = "2"
